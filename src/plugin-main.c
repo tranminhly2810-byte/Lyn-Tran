@@ -1,4 +1,5 @@
 #include <obs-module.h>
+
 #include "ultrakey-filter.h"
 
 OBS_DECLARE_MODULE()
@@ -6,7 +7,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE("lyn-ultrakey", "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
-    return "Lyn UltraKey GPU chroma-key filter for OBS Studio";
+    return "Lyn UltraKey native GPU chroma-key filter";
 }
 
 bool obs_module_load(void)
