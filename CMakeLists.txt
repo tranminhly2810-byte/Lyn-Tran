@@ -41,5 +41,3 @@ target_sources(
     src/ultrakey-filter.c
     src/ultrakey-filter.h
 )
-
-set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

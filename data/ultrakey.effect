@@ -1,118 +1,60 @@
 // ============================================================
-// LYN ULTRAKEY V1.0 - OBS ShaderFilter
-// Green-screen keyer focused on:
-// 1) clean matte
-// 2) low edge noise
-// 3) no hard outline
-// 4) strong despill without dark/magenta edges
-//
-// Notes:
-// - RGB output always comes from center pixel: no RGB blur.
-// - Neighbor samples are used only for matte analysis.
-// - Designed for green screen.
+// LYN ULTRAKEY - Native OBS Effect
+// Milestone 2: native GPU render + working controls
 // ============================================================
 
-uniform float4 key_color<
-    string name = "Màu phông";
-    string widget_type = "color";
-> = {0.15, 0.80, 0.10, 1.0};
+uniform float4x4 ViewProj;
+uniform texture2d image;
 
-uniform float similarity<
-    string name = "1. Cắt phông [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 430.0;
+uniform float4 key_color;
+uniform float2 pixel_size;
 
-uniform float softness<
-    string name = "2. Mềm matte [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 110.0;
+uniform float similarity;
+uniform float softness;
+uniform float edge_clean;
+uniform float noise_reject;
+uniform float hair_detail;
+uniform float despill;
+uniform float despill_inside;
+uniform float edge_decontaminate;
+uniform float black_protect;
+uniform float debug_view;
 
-uniform float edge_clean<
-    string name = "3. Làm sạch viền [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 520.0;
+sampler_state textureSampler {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
 
-uniform float noise_reject<
-    string name = "4. Khóa noise tóc/viền [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 420.0;
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv : TEXCOORD0;
+};
 
-uniform float hair_detail<
-    string name = "5. Giữ tóc mảnh [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 620.0;
-
-uniform float despill<
-    string name = "6. Khử ám xanh [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 820.0;
-
-uniform float despill_inside<
-    string name = "7. Khử xanh ăn sâu [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 420.0;
-
-uniform float edge_decontaminate<
-    string name = "8. Gỡ màu phông khỏi viền [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 700.0;
-
-uniform float black_protect<
-    string name = "9. Bảo vệ tóc/áo đen [0-1000]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 1000.0;
-    float step = 1.0;
-> = 170.0;
-
-uniform float debug_view<
-    string name = "10. Kiểm tra [0 Ảnh | 1 Matte | 2 Edge | 3 Spill]";
-    string widget_type = "slider";
-    float minimum = 0.0;
-    float maximum = 3.0;
-    float step = 1.0;
-> = 0.0;
-
-
-// ------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------
+VertData VSDefault(VertData v_in)
+{
+    VertData v_out;
+    v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    v_out.uv = v_in.uv;
+    return v_out;
+}
 
 float Luma(float3 c)
 {
     return dot(c, float3(0.2126, 0.7152, 0.0722));
 }
 
-float3 RGBtoYCbCr(float3 c)
+float2 Chroma(float3 c)
 {
-    float y  = dot(c, float3(0.2126,  0.7152,  0.0722));
-    float cb = dot(c, float3(-0.1146, -0.3854, 0.5000));
-    float cr = dot(c, float3(0.5000, -0.4542, -0.0458));
-    return float3(y, cb, cr);
+    return float2(
+        dot(c, float3(-0.1146, -0.3854, 0.5000)),
+        dot(c, float3(0.5000, -0.4542, -0.0458))
+    );
+}
+
+float GreenExcess(float3 c)
+{
+    return c.g - max(c.r, c.b);
 }
 
 float Hermite01(float x)
@@ -131,109 +73,84 @@ float Median9Approx(
     float a3, float a4, float a5,
     float a6, float a7, float a8)
 {
-    float r0 = Median3(a0, a1, a2);
-    float r1 = Median3(a3, a4, a5);
-    float r2 = Median3(a6, a7, a8);
-    return Median3(r0, r1, r2);
+    return Median3(
+        Median3(a0, a1, a2),
+        Median3(a3, a4, a5),
+        Median3(a6, a7, a8)
+    );
 }
 
-float GreenExcess(float3 c)
+float RawAlpha(float3 c)
 {
-    return c.g - max(c.r, c.b);
-}
+    float dist = distance(Chroma(c), Chroma(key_color.rgb));
 
-float ChromaDistance(float3 c, float3 key)
-{
-    float3 yc = RGBtoYCbCr(c);
-    float3 yk = RGBtoYCbCr(key);
-    return distance(yc.yz, yk.yz);
-}
-
-// Adaptive matte:
-// - Chroma distance handles uneven lighting.
-// - Green dominance reinforces only true green-screen pixels.
-float RawAlpha(float3 c, float3 key, float cut, float soft)
-{
-    float dist = ChromaDistance(c, key);
+    float cut = lerp(0.025, 0.52, similarity);
+    float soft = lerp(0.004, 0.25, softness);
 
     float baseAlpha = smoothstep(cut, cut + soft, dist);
 
-    float keyExcess = max(GreenExcess(key), 0.05);
-    float srcExcess = GreenExcess(c);
-    float normGreen = srcExcess / keyExcess;
+    float keyExcess = max(GreenExcess(key_color.rgb), 0.05);
+    float normalizedGreen = GreenExcess(c) / keyExcess;
 
-    float greenBG = smoothstep(0.05, 0.90, normGreen);
-    float nearKey = 1.0 - smoothstep(cut * 0.55, cut + soft * 1.35, dist);
+    float greenBackground =
+        smoothstep(0.05, 0.90, normalizedGreen);
 
-    float bgConfidence = saturate(greenBG * nearKey);
+    float nearKey =
+        1.0 - smoothstep(cut * 0.55, cut + soft * 1.35, dist);
 
-    // Reinforce removal only for pixels confidently green.
-    float alpha = saturate(baseAlpha - bgConfidence * 0.32);
+    float backgroundConfidence =
+        saturate(greenBackground * nearKey);
 
-    return Hermite01(alpha);
+    return Hermite01(
+        saturate(baseAlpha - backgroundConfidence * 0.32)
+    );
 }
 
-
-// ------------------------------------------------------------
-// Main
-// ------------------------------------------------------------
-
-float4 mainImage(VertData v_in) : TARGET
+float4 PSUltraKey(VertData v_in) : TARGET
 {
     float2 uv = v_in.uv;
-    float2 px = uv_pixel_interval;
+    float2 px = pixel_size;
 
-    // Center RGB is the only RGB used in final output.
-    float4 c  = image.Sample(textureSampler, uv);
+    float4 center = image.Sample(textureSampler, uv);
 
-    // 8 neighbors for matte analysis only.
-    float4 l  = image.Sample(textureSampler, uv + float2(-px.x,  0.0));
-    float4 r  = image.Sample(textureSampler, uv + float2( px.x,  0.0));
-    float4 u  = image.Sample(textureSampler, uv + float2( 0.0, -px.y));
-    float4 d  = image.Sample(textureSampler, uv + float2( 0.0,  px.y));
-    float4 ul = image.Sample(textureSampler, uv + float2(-px.x, -px.y));
-    float4 ur = image.Sample(textureSampler, uv + float2( px.x, -px.y));
-    float4 dl = image.Sample(textureSampler, uv + float2(-px.x,  px.y));
-    float4 dr = image.Sample(textureSampler, uv + float2( px.x,  px.y));
+    float aUL = RawAlpha(
+        image.Sample(textureSampler, uv + float2(-px.x, -px.y)).rgb
+    );
+    float aU = RawAlpha(
+        image.Sample(textureSampler, uv + float2(0.0, -px.y)).rgb
+    );
+    float aUR = RawAlpha(
+        image.Sample(textureSampler, uv + float2(px.x, -px.y)).rgb
+    );
+    float aL = RawAlpha(
+        image.Sample(textureSampler, uv + float2(-px.x, 0.0)).rgb
+    );
+    float aC = RawAlpha(center.rgb);
+    float aR = RawAlpha(
+        image.Sample(textureSampler, uv + float2(px.x, 0.0)).rgb
+    );
+    float aDL = RawAlpha(
+        image.Sample(textureSampler, uv + float2(-px.x, px.y)).rgb
+    );
+    float aD = RawAlpha(
+        image.Sample(textureSampler, uv + float2(0.0, px.y)).rgb
+    );
+    float aDR = RawAlpha(
+        image.Sample(textureSampler, uv + float2(px.x, px.y)).rgb
+    );
 
-    float3 key = saturate(key_color.rgb);
-
-    // Strong, visible slider mappings.
-    float cut = lerp(0.025, 0.52, similarity / 1000.0);
-    float soft = lerp(0.004, 0.25, softness / 1000.0);
-
-    float cleanAmt = edge_clean / 1000.0;
-    float noiseAmt = noise_reject / 1000.0;
-    float hairAmt = hair_detail / 1000.0;
-    float spillAmt = despill / 1000.0;
-    float spillInsideAmt = despill_inside / 1000.0;
-    float deconAmt = edge_decontaminate / 1000.0;
-    float blackAmt = black_protect / 1000.0;
-
-    // Raw matte.
-    float aUL = RawAlpha(ul.rgb, key, cut, soft);
-    float aU  = RawAlpha(u.rgb,  key, cut, soft);
-    float aUR = RawAlpha(ur.rgb, key, cut, soft);
-    float aL  = RawAlpha(l.rgb,  key, cut, soft);
-    float aC  = RawAlpha(c.rgb,  key, cut, soft);
-    float aR  = RawAlpha(r.rgb,  key, cut, soft);
-    float aDL = RawAlpha(dl.rgb, key, cut, soft);
-    float aD  = RawAlpha(d.rgb,  key, cut, soft);
-    float aDR = RawAlpha(dr.rgb, key, cut, soft);
-
-    // Median removes isolated matte speckles without averaging the contour.
     float medianA = Median9Approx(
         aUL, aU, aUR,
-        aL,  aC, aR,
+        aL, aC, aR,
         aDL, aD, aDR
     );
 
-    float disagreement = abs(aC - medianA);
-    float isolated = smoothstep(0.035, 0.30, disagreement);
+    float isolated =
+        smoothstep(0.035, 0.30, abs(aC - medianA));
 
-    float alpha = lerp(aC, medianA, isolated * noiseAmt);
+    float alpha =
+        lerp(aC, medianA, isolated * noise_reject);
 
-    // Neighbor statistics.
     float amin = min(
         min(min(aUL, aU), min(aUR, aL)),
         min(min(aR, aDL), min(aD, aDR))
@@ -246,32 +163,49 @@ float4 mainImage(VertData v_in) : TARGET
     );
     amax = max(amax, aC);
 
-    float spatialEdge = saturate((amax - amin) * 2.75);
-    float fractionalEdge = saturate(4.0 * alpha * (1.0 - alpha));
-    float edgeMask = saturate(max(spatialEdge, fractionalEdge));
+    float spatialEdge =
+        saturate((amax - amin) * 2.75);
 
-    // Edge cleanup without min-alpha erosion.
-    // This steepens only the fractional region, so it avoids a hard outline.
-    float refineWidth = lerp(0.50, 0.22, cleanAmt);
-    float refined = smoothstep(0.5 - refineWidth, 0.5 + refineWidth, alpha);
-    alpha = lerp(alpha, refined, edgeMask * cleanAmt);
+    float fractionalEdge =
+        saturate(4.0 * alpha * (1.0 - alpha));
 
-    // Protect dark foreground if it is not strongly green.
-    float lum = Luma(c.rgb);
-    float darkMask = 1.0 - smoothstep(
-        max(blackAmt * 0.35, 0.01),
-        max(blackAmt + 0.045, 0.055),
-        lum
+    float edgeMask =
+        saturate(max(spatialEdge, fractionalEdge));
+
+    float refineWidth =
+        lerp(0.50, 0.22, edge_clean);
+
+    float refined =
+        smoothstep(
+            0.5 - refineWidth,
+            0.5 + refineWidth,
+            alpha
+        );
+
+    alpha =
+        lerp(alpha, refined, edgeMask * edge_clean);
+
+    float centerGreen =
+        GreenExcess(center.rgb);
+
+    float nonGreen =
+        1.0 - smoothstep(0.015, 0.14, centerGreen);
+
+    float darkMask =
+        1.0 - smoothstep(
+            max(black_protect * 0.35, 0.01),
+            max(black_protect + 0.045, 0.055),
+            Luma(center.rgb)
+        );
+
+    float interiorEvidence =
+        smoothstep(0.48, 0.93, amax);
+
+    alpha = max(
+        alpha,
+        darkMask * nonGreen * interiorEvidence * black_protect
     );
 
-    float centerGreen = GreenExcess(c.rgb);
-    float nonGreen = 1.0 - smoothstep(0.015, 0.14, centerGreen);
-    float interiorEvidence = smoothstep(0.48, 0.93, amax);
-
-    float darkProtect = darkMask * nonGreen * interiorEvidence;
-    alpha = max(alpha, darkProtect * blackAmt);
-
-    // Preserve fine hair only when center pixel is not strongly green.
     float thinBand =
         smoothstep(0.035, 0.42, aC) *
         (1.0 - smoothstep(0.58, 0.95, aC));
@@ -281,99 +215,104 @@ float4 mainImage(VertData v_in) : TARGET
         nonGreen *
         smoothstep(0.15, 0.85, amax);
 
-    alpha = max(alpha, aC * hairConfidence * hairAmt);
+    alpha = max(
+        alpha,
+        aC * hairConfidence * hair_detail
+    );
 
-    // Lock only extreme values; avoids visible contour.
-    float lockLow = lerp(0.001, 0.022, noiseAmt);
-    float lockHigh = 1.0 - lockLow;
+    float lockLow =
+        lerp(0.001, 0.022, noise_reject);
 
     alpha *= step(lockLow, alpha);
-    alpha = lerp(alpha, 1.0, step(lockHigh, alpha));
+    alpha = lerp(
+        alpha,
+        1.0,
+        step(1.0 - lockLow, alpha)
+    );
     alpha = saturate(alpha);
 
-    // --------------------------------------------------------
-    // Edge color decontamination
-    // --------------------------------------------------------
-
-    float3 original = c.rgb;
+    float3 original = center.rgb;
     float3 rgb = original;
 
-    float originalNeutral = original.r * 0.56 + original.b * 0.44;
-    float originalGreenExcess = max(original.g - originalNeutral, 0.0);
-    float originalGreenMask = smoothstep(0.002, 0.16, originalGreenExcess);
+    float originalNeutral =
+        original.r * 0.56 + original.b * 0.44;
 
-    float safeAlpha = max(alpha, 0.22);
-    float3 recovered = (original - key * (1.0 - alpha)) / safeAlpha;
-    recovered = saturate(recovered);
+    float originalExcess =
+        max(original.g - originalNeutral, 0.0);
 
-    float validRecovery = smoothstep(0.12, 0.62, alpha);
+    float originalGreenMask =
+        smoothstep(0.002, 0.16, originalExcess);
+
+    float safeAlpha =
+        max(alpha, 0.22);
+
+    float3 recovered =
+        saturate(
+            (original - key_color.rgb * (1.0 - alpha)) /
+            safeAlpha
+        );
+
     float recoveryMask =
         edgeMask *
-        validRecovery *
+        smoothstep(0.12, 0.62, alpha) *
         originalGreenMask *
-        deconAmt;
+        edge_decontaminate;
 
     rgb = lerp(rgb, recovered, recoveryMask);
 
-    // --------------------------------------------------------
-    // Strong despill
-    // --------------------------------------------------------
-
     float oldLuma = Luma(rgb);
 
-    float neutralGreen = rgb.r * 0.58 + rgb.b * 0.42;
-    float excessG = max(rgb.g - neutralGreen, 0.0);
-    float greenDetect = smoothstep(0.001, 0.095, excessG);
+    float neutralGreen =
+        rgb.r * 0.58 + rgb.b * 0.42;
 
-    // Edge by default; expands into opaque foreground when requested.
-    float insideMask = saturate(edgeMask + alpha * spillInsideAmt);
+    float excessGreen =
+        max(rgb.g - neutralGreen, 0.0);
 
-    // Baseline 20% response ensures slider is never visually dead.
-    float spillArea = lerp(0.20, 1.0, insideMask);
-    float spillMask = saturate(greenDetect * spillAmt * spillArea);
+    float greenDetect =
+        smoothstep(0.001, 0.095, excessGreen);
 
-    float removed = excessG * spillMask;
+    float insideMask =
+        saturate(edgeMask + alpha * despill_inside);
+
+    float spillArea =
+        lerp(0.20, 1.0, insideMask);
+
+    float spillMask =
+        saturate(greenDetect * despill * spillArea);
+
+    float removed =
+        excessGreen * spillMask;
+
     rgb.g -= removed;
+    rgb.r += removed * 0.42;
+    rgb.b += removed * 0.06;
 
-    // Adaptive compensation: warm pixels favor red, dark hair receives less compensation.
-    float warm = smoothstep(-0.08, 0.28, rgb.r - rgb.b);
-    float darkHair = 1.0 - smoothstep(0.04, 0.26, oldLuma);
-
-    float redShare = lerp(0.28, 0.50, warm) * lerp(0.65, 1.0, 1.0 - darkHair);
-    float blueShare = lerp(0.10, 0.035, warm);
-
-    rgb.r += removed * redShare;
-    rgb.b += removed * blueShare;
-
-    // Secondary spill clamp removes residual green ridge.
-    float secondaryLimit =
+    float secondLimit =
         max(rgb.r, rgb.b) * 0.90 +
         min(rgb.r, rgb.b) * 0.10;
 
-    float secondary = max(rgb.g - secondaryLimit, 0.0);
-    float secondaryRemoved = secondary * spillMask * 0.72;
+    float secondRemoved =
+        max(rgb.g - secondLimit, 0.0) *
+        spillMask *
+        0.72;
 
-    rgb.g -= secondaryRemoved;
-    rgb.r += secondaryRemoved * 0.16;
-    rgb.b += secondaryRemoved * 0.025;
-
-    rgb = saturate(rgb);
-
-    // Limited luma restoration avoids dark or glowing outlines.
-    float newLuma = max(Luma(rgb), 0.0001);
-    float ratio = clamp(oldLuma / newLuma, 0.93, 1.07);
-    float3 lumaFixed = saturate(rgb * ratio);
-    rgb = lerp(rgb, lumaFixed, spillMask * 0.38);
-
-    // Mild anti-magenta correction after strong green removal.
-    float magenta = max(min(rgb.r, rgb.b) - rgb.g, 0.0);
-    rgb.g += magenta * spillMask * 0.10;
+    rgb.g -= secondRemoved;
+    rgb.r += secondRemoved * 0.16;
+    rgb.b += secondRemoved * 0.025;
 
     rgb = saturate(rgb);
 
-    // --------------------------------------------------------
-    // Debug views
-    // --------------------------------------------------------
+    float newLuma =
+        max(Luma(rgb), 0.0001);
+
+    float lumaRatio =
+        clamp(oldLuma / newLuma, 0.93, 1.07);
+
+    rgb = lerp(
+        rgb,
+        saturate(rgb * lumaRatio),
+        spillMask * 0.38
+    );
 
     if (debug_view > 2.5)
         return float4(spillMask, spillMask, spillMask, 1.0);
@@ -384,5 +323,14 @@ float4 mainImage(VertData v_in) : TARGET
     if (debug_view > 0.5)
         return float4(alpha, alpha, alpha, 1.0);
 
-    return float4(rgb, saturate(alpha * c.a));
+    return float4(rgb * alpha, alpha * center.a);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSUltraKey(v_in);
+    }
 }

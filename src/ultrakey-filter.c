@@ -1,7 +1,49 @@
 #include "ultrakey-filter.h"
 
+#include <graphics/vec2.h>
+#include <graphics/vec4.h>
+#include <util/platform.h>
+
+#define S_KEY_COLOR "key_color"
+#define S_SIMILARITY "similarity"
+#define S_SOFTNESS "softness"
+#define S_EDGE_CLEAN "edge_clean"
+#define S_NOISE_REJECT "noise_reject"
+#define S_HAIR_DETAIL "hair_detail"
+#define S_DESPILL "despill"
+#define S_DESPILL_INSIDE "despill_inside"
+#define S_DECONTAMINATE "edge_decontaminate"
+#define S_BLACK_PROTECT "black_protect"
+#define S_DEBUG_VIEW "debug_view"
+
 struct lyn_ultrakey_filter {
     obs_source_t *context;
+    gs_effect_t *effect;
+
+    gs_eparam_t *key_color_param;
+    gs_eparam_t *pixel_size_param;
+    gs_eparam_t *similarity_param;
+    gs_eparam_t *softness_param;
+    gs_eparam_t *edge_clean_param;
+    gs_eparam_t *noise_reject_param;
+    gs_eparam_t *hair_detail_param;
+    gs_eparam_t *despill_param;
+    gs_eparam_t *despill_inside_param;
+    gs_eparam_t *decontaminate_param;
+    gs_eparam_t *black_protect_param;
+    gs_eparam_t *debug_view_param;
+
+    struct vec4 key_color;
+    float similarity;
+    float softness;
+    float edge_clean;
+    float noise_reject;
+    float hair_detail;
+    float despill;
+    float despill_inside;
+    float edge_decontaminate;
+    float black_protect;
+    float debug_view;
 };
 
 static const char *lyn_ultrakey_get_name(void *unused)
@@ -10,36 +52,166 @@ static const char *lyn_ultrakey_get_name(void *unused)
     return obs_module_text("LynUltraKey.FilterName");
 }
 
-static void *lyn_ultrakey_create(obs_data_t *settings, obs_source_t *source)
+static void lyn_ultrakey_update(void *data, obs_data_t *settings)
 {
-    UNUSED_PARAMETER(settings);
+    struct lyn_ultrakey_filter *filter = data;
 
-    struct lyn_ultrakey_filter *filter =
-        bzalloc(sizeof(struct lyn_ultrakey_filter));
+    const uint32_t key_color =
+        (uint32_t)obs_data_get_int(settings, S_KEY_COLOR);
 
-    filter->context = source;
+    vec4_from_rgba(&filter->key_color, key_color | 0xFF000000);
 
-    blog(LOG_INFO, "[Lyn UltraKey] filter instance created");
-    return filter;
+    filter->similarity =
+        (float)obs_data_get_int(settings, S_SIMILARITY) / 1000.0f;
+    filter->softness =
+        (float)obs_data_get_int(settings, S_SOFTNESS) / 1000.0f;
+    filter->edge_clean =
+        (float)obs_data_get_int(settings, S_EDGE_CLEAN) / 1000.0f;
+    filter->noise_reject =
+        (float)obs_data_get_int(settings, S_NOISE_REJECT) / 1000.0f;
+    filter->hair_detail =
+        (float)obs_data_get_int(settings, S_HAIR_DETAIL) / 1000.0f;
+    filter->despill =
+        (float)obs_data_get_int(settings, S_DESPILL) / 1000.0f;
+    filter->despill_inside =
+        (float)obs_data_get_int(settings, S_DESPILL_INSIDE) / 1000.0f;
+    filter->edge_decontaminate =
+        (float)obs_data_get_int(settings, S_DECONTAMINATE) / 1000.0f;
+    filter->black_protect =
+        (float)obs_data_get_int(settings, S_BLACK_PROTECT) / 1000.0f;
+    filter->debug_view =
+        (float)obs_data_get_int(settings, S_DEBUG_VIEW);
 }
 
 static void lyn_ultrakey_destroy(void *data)
 {
     struct lyn_ultrakey_filter *filter = data;
 
-    blog(LOG_INFO, "[Lyn UltraKey] filter instance destroyed");
+    if (!filter)
+        return;
+
+    if (filter->effect) {
+        obs_enter_graphics();
+        gs_effect_destroy(filter->effect);
+        obs_leave_graphics();
+    }
+
     bfree(filter);
 }
 
-static void lyn_ultrakey_update(void *data, obs_data_t *settings)
+static void *lyn_ultrakey_create(obs_data_t *settings, obs_source_t *source)
 {
-    UNUSED_PARAMETER(data);
-    UNUSED_PARAMETER(settings);
+    struct lyn_ultrakey_filter *filter =
+        bzalloc(sizeof(struct lyn_ultrakey_filter));
+
+    filter->context = source;
+
+    char *effect_path = obs_module_file("ultrakey.effect");
+
+    obs_enter_graphics();
+    filter->effect = gs_effect_create_from_file(effect_path, NULL);
+
+    if (filter->effect) {
+        filter->key_color_param =
+            gs_effect_get_param_by_name(filter->effect, "key_color");
+        filter->pixel_size_param =
+            gs_effect_get_param_by_name(filter->effect, "pixel_size");
+        filter->similarity_param =
+            gs_effect_get_param_by_name(filter->effect, "similarity");
+        filter->softness_param =
+            gs_effect_get_param_by_name(filter->effect, "softness");
+        filter->edge_clean_param =
+            gs_effect_get_param_by_name(filter->effect, "edge_clean");
+        filter->noise_reject_param =
+            gs_effect_get_param_by_name(filter->effect, "noise_reject");
+        filter->hair_detail_param =
+            gs_effect_get_param_by_name(filter->effect, "hair_detail");
+        filter->despill_param =
+            gs_effect_get_param_by_name(filter->effect, "despill");
+        filter->despill_inside_param =
+            gs_effect_get_param_by_name(filter->effect, "despill_inside");
+        filter->decontaminate_param =
+            gs_effect_get_param_by_name(filter->effect, "edge_decontaminate");
+        filter->black_protect_param =
+            gs_effect_get_param_by_name(filter->effect, "black_protect");
+        filter->debug_view_param =
+            gs_effect_get_param_by_name(filter->effect, "debug_view");
+    }
+    obs_leave_graphics();
+
+    bfree(effect_path);
+
+    if (!filter->effect) {
+        blog(LOG_ERROR, "[Lyn UltraKey] failed to load ultrakey.effect");
+        lyn_ultrakey_destroy(filter);
+        return NULL;
+    }
+
+    lyn_ultrakey_update(filter, settings);
+    blog(LOG_INFO, "[Lyn UltraKey] filter instance created");
+
+    return filter;
 }
 
-static void lyn_ultrakey_get_defaults(obs_data_t *settings)
+static void lyn_ultrakey_video_render(void *data, gs_effect_t *unused_effect)
 {
-    UNUSED_PARAMETER(settings);
+    UNUSED_PARAMETER(unused_effect);
+
+    struct lyn_ultrakey_filter *filter = data;
+    obs_source_t *target = obs_filter_get_target(filter->context);
+
+    if (!target || !filter->effect) {
+        obs_source_skip_video_filter(filter->context);
+        return;
+    }
+
+    const uint32_t width = obs_source_get_base_width(target);
+    const uint32_t height = obs_source_get_base_height(target);
+
+    if (width == 0 || height == 0) {
+        obs_source_skip_video_filter(filter->context);
+        return;
+    }
+
+    if (!obs_source_process_filter_begin(
+            filter->context, GS_RGBA, OBS_ALLOW_DIRECT_RENDERING))
+        return;
+
+    struct vec2 pixel_size;
+    vec2_set(
+        &pixel_size,
+        1.0f / (float)width,
+        1.0f / (float)height
+    );
+
+    gs_effect_set_vec4(filter->key_color_param, &filter->key_color);
+    gs_effect_set_vec2(filter->pixel_size_param, &pixel_size);
+    gs_effect_set_float(filter->similarity_param, filter->similarity);
+    gs_effect_set_float(filter->softness_param, filter->softness);
+    gs_effect_set_float(filter->edge_clean_param, filter->edge_clean);
+    gs_effect_set_float(filter->noise_reject_param, filter->noise_reject);
+    gs_effect_set_float(filter->hair_detail_param, filter->hair_detail);
+    gs_effect_set_float(filter->despill_param, filter->despill);
+    gs_effect_set_float(
+        filter->despill_inside_param,
+        filter->despill_inside
+    );
+    gs_effect_set_float(
+        filter->decontaminate_param,
+        filter->edge_decontaminate
+    );
+    gs_effect_set_float(
+        filter->black_protect_param,
+        filter->black_protect
+    );
+    gs_effect_set_float(filter->debug_view_param, filter->debug_view);
+
+    obs_source_process_filter_end(
+        filter->context,
+        filter->effect,
+        0,
+        0
+    );
 }
 
 static obs_properties_t *lyn_ultrakey_get_properties(void *data)
@@ -48,32 +220,95 @@ static obs_properties_t *lyn_ultrakey_get_properties(void *data)
 
     obs_properties_t *props = obs_properties_create();
 
-    obs_properties_add_text(
+    obs_properties_add_color(
         props,
-        "milestone_status",
-        obs_module_text("LynUltraKey.Status"),
-        OBS_TEXT_INFO
+        S_KEY_COLOR,
+        obs_module_text("LynUltraKey.KeyColor")
+    );
+
+    obs_properties_add_int_slider(
+        props, S_SIMILARITY,
+        obs_module_text("LynUltraKey.Similarity"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_SOFTNESS,
+        obs_module_text("LynUltraKey.Softness"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_EDGE_CLEAN,
+        obs_module_text("LynUltraKey.EdgeClean"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_NOISE_REJECT,
+        obs_module_text("LynUltraKey.NoiseReject"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_HAIR_DETAIL,
+        obs_module_text("LynUltraKey.HairDetail"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_DESPILL,
+        obs_module_text("LynUltraKey.Despill"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_DESPILL_INSIDE,
+        obs_module_text("LynUltraKey.DespillInside"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_DECONTAMINATE,
+        obs_module_text("LynUltraKey.Decontaminate"),
+        0, 1000, 1
+    );
+    obs_properties_add_int_slider(
+        props, S_BLACK_PROTECT,
+        obs_module_text("LynUltraKey.BlackProtect"),
+        0, 1000, 1
+    );
+
+    obs_property_t *debug = obs_properties_add_list(
+        props,
+        S_DEBUG_VIEW,
+        obs_module_text("LynUltraKey.DebugView"),
+        OBS_COMBO_TYPE_LIST,
+        OBS_COMBO_FORMAT_INT
+    );
+
+    obs_property_list_add_int(
+        debug, obs_module_text("LynUltraKey.DebugFinal"), 0
+    );
+    obs_property_list_add_int(
+        debug, obs_module_text("LynUltraKey.DebugMatte"), 1
+    );
+    obs_property_list_add_int(
+        debug, obs_module_text("LynUltraKey.DebugEdge"), 2
+    );
+    obs_property_list_add_int(
+        debug, obs_module_text("LynUltraKey.DebugSpill"), 3
     );
 
     return props;
 }
 
-static void lyn_ultrakey_video_render(void *data, gs_effect_t *effect)
+static void lyn_ultrakey_get_defaults(obs_data_t *settings)
 {
-    UNUSED_PARAMETER(effect);
-
-    struct lyn_ultrakey_filter *filter = data;
-
-    if (!filter || !filter->context) {
-        return;
-    }
-
-    /*
-     * Milestone 1 is intentionally pass-through.
-     * The filter appears in OBS without changing the image.
-     * Milestone 2 will replace this with the UltraKey GPU effect.
-     */
-    obs_source_skip_video_filter(filter->context);
+    obs_data_set_default_int(settings, S_KEY_COLOR, 0x00CC33);
+    obs_data_set_default_int(settings, S_SIMILARITY, 430);
+    obs_data_set_default_int(settings, S_SOFTNESS, 110);
+    obs_data_set_default_int(settings, S_EDGE_CLEAN, 520);
+    obs_data_set_default_int(settings, S_NOISE_REJECT, 420);
+    obs_data_set_default_int(settings, S_HAIR_DETAIL, 620);
+    obs_data_set_default_int(settings, S_DESPILL, 820);
+    obs_data_set_default_int(settings, S_DESPILL_INSIDE, 420);
+    obs_data_set_default_int(settings, S_DECONTAMINATE, 700);
+    obs_data_set_default_int(settings, S_BLACK_PROTECT, 170);
+    obs_data_set_default_int(settings, S_DEBUG_VIEW, 0);
 }
 
 struct obs_source_info lyn_ultrakey_filter_info = {
