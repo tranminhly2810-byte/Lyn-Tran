@@ -34,10 +34,10 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/ultrakey-filter.c src/ultrakey-filter.h)
+
+set_target_properties_plugin(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE
-    src/plugin-main.c
-    src/ultrakey-filter.c
-    src/ultrakey-filter.h
+  PROPERTIES
+    OUTPUT_NAME ${_name}
 )
