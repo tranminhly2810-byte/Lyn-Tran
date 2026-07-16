@@ -1,14 +1,12 @@
-// ============================================================
-// LYN ULTRAKEY MILESTONE 6 - FULL REWRITE
-// Direct controls + structural hair denoise + strong despill
-// ============================================================
+// LYN ULTRAKEY v1.0 STABLE
+// Combined structural hair denoise + direct controls.
+// Replace only data/ultrakey.effect.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
 
 uniform float4 key_color;
 uniform float2 pixel_size;
-
 uniform float similarity;
 uniform float softness;
 uniform float edge_clean;
@@ -62,6 +60,11 @@ float Median3(float a, float b, float c)
     return max(min(a, b), min(max(a, b), c));
 }
 
+float Median5(float a, float b, float c, float d, float e)
+{
+    return Median3(Median3(a, b, c), c, Median3(c, d, e));
+}
+
 float Median9(
     float a0, float a1, float a2,
     float a3, float a4, float a5,
@@ -77,16 +80,14 @@ float Median9(
 float RawAlpha(float3 c)
 {
     float dist = distance(Chroma(c), Chroma(key_color.rgb));
-
     float cut = lerp(0.018, 0.50, similarity);
     float soft = lerp(0.003, 0.22, softness);
 
     float distanceAlpha = smoothstep(cut, cut + soft, dist);
 
     float keyGreen = max(GreenExcess(key_color.rgb), 0.05);
-    float greenRatio = GreenExcess(c) / keyGreen;
-
-    float greenConfidence = smoothstep(0.025, 0.82, greenRatio);
+    float normalizedGreen = GreenExcess(c) / keyGreen;
+    float greenConfidence = smoothstep(0.025, 0.82, normalizedGreen);
     float nearKey =
         1.0 - smoothstep(cut * 0.42, cut + soft * 1.45, dist);
 
@@ -94,7 +95,7 @@ float RawAlpha(float3 c)
         saturate(distanceAlpha - greenConfidence * nearKey * 0.50);
 
     float fog =
-        smoothstep(0.03, 0.28, greenRatio) *
+        smoothstep(0.03, 0.28, normalizedGreen) *
         (1.0 - distanceAlpha);
 
     alpha = saturate(alpha - fog * 0.18);
@@ -108,83 +109,111 @@ float4 PSUltraKey(VertData v) : TARGET
 
     float4 c = image.Sample(textureSampler, uv);
 
-    float aUL = RawAlpha(
-        image.Sample(textureSampler, uv + float2(-p.x, -p.y)).rgb);
-    float aU = RawAlpha(
-        image.Sample(textureSampler, uv + float2(0.0, -p.y)).rgb);
-    float aUR = RawAlpha(
-        image.Sample(textureSampler, uv + float2(p.x, -p.y)).rgb);
-    float aL = RawAlpha(
-        image.Sample(textureSampler, uv + float2(-p.x, 0.0)).rgb);
-    float aC = RawAlpha(c.rgb);
-    float aR = RawAlpha(
-        image.Sample(textureSampler, uv + float2(p.x, 0.0)).rgb);
-    float aDL = RawAlpha(
-        image.Sample(textureSampler, uv + float2(-p.x, p.y)).rgb);
-    float aD = RawAlpha(
-        image.Sample(textureSampler, uv + float2(0.0, p.y)).rgb);
-    float aDR = RawAlpha(
-        image.Sample(textureSampler, uv + float2(p.x, p.y)).rgb);
+    float aUL = RawAlpha(image.Sample(textureSampler, uv + float2(-p.x, -p.y)).rgb);
+    float aU  = RawAlpha(image.Sample(textureSampler, uv + float2(0.0, -p.y)).rgb);
+    float aUR = RawAlpha(image.Sample(textureSampler, uv + float2(p.x, -p.y)).rgb);
+    float aL  = RawAlpha(image.Sample(textureSampler, uv + float2(-p.x, 0.0)).rgb);
+    float aC  = RawAlpha(c.rgb);
+    float aR  = RawAlpha(image.Sample(textureSampler, uv + float2(p.x, 0.0)).rgb);
+    float aDL = RawAlpha(image.Sample(textureSampler, uv + float2(-p.x, p.y)).rgb);
+    float aD  = RawAlpha(image.Sample(textureSampler, uv + float2(0.0, p.y)).rgb);
+    float aDR = RawAlpha(image.Sample(textureSampler, uv + float2(p.x, p.y)).rgb);
 
-    float medianA =
-        Median9(aUL, aU, aUR, aL, aC, aR, aDL, aD, aDR);
+    float aU2 = RawAlpha(image.Sample(textureSampler, uv + float2(0.0, -2.0 * p.y)).rgb);
+    float aD2 = RawAlpha(image.Sample(textureSampler, uv + float2(0.0,  2.0 * p.y)).rgb);
+    float aL2 = RawAlpha(image.Sample(textureSampler, uv + float2(-2.0 * p.x, 0.0)).rgb);
+    float aR2 = RawAlpha(image.Sample(textureSampler, uv + float2( 2.0 * p.x, 0.0)).rgb);
 
-    float averageA =
-        (aUL + aU + aUR + aL + aC + aR + aDL + aD + aDR) /
-        9.0;
+    float med9 = Median9(aUL, aU, aUR, aL, aC, aR, aDL, aD, aDR);
+    float medH = Median5(aL2, aL, aC, aR, aR2);
+    float medV = Median5(aU2, aU, aC, aD, aD2);
+    float structural = Median3(medH, medV, med9);
 
-    float crossA =
+    float avg9 =
+        (aUL + aU + aUR + aL + aC + aR + aDL + aD + aDR) / 9.0;
+
+    float cross =
         (aU + aL + aC + aR + aD) * 0.20;
 
     float amin = min(
         min(min(aUL, aU), min(aUR, aL)),
-        min(min(aR, aDL), min(aD, aDR)));
+        min(min(aR, aDL), min(aD, aDR))
+    );
     amin = min(amin, aC);
 
     float amax = max(
         max(max(aUL, aU), max(aUR, aL)),
-        max(max(aR, aDL), max(aD, aDR)));
+        max(max(aR, aDL), max(aD, aDR))
+    );
     amax = max(amax, aC);
 
-    float edge =
-        saturate(max((amax - amin) * 3.20,
-                     4.0 * aC * (1.0 - aC)));
+    float edgeMask =
+        saturate(max((amax - amin) * 3.2, 4.0 * aC * (1.0 - aC)));
 
-    // Noise Reject: direct and visible.
-    float noiseTarget = lerp(medianA, averageA, 0.18);
+    // 4. Noise Reject: direct blend to structural matte.
+    float noiseTarget = lerp(structural, avg9, 0.18);
     float alpha = lerp(aC, noiseTarget, noise_reject);
 
     float unsupported =
-        (1.0 - smoothstep(0.10, 0.48, averageA)) *
-        (1.0 - smoothstep(0.12, 0.52, medianA));
+        (1.0 - smoothstep(0.10, 0.48, avg9)) *
+        (1.0 - smoothstep(0.12, 0.52, structural));
 
     alpha =
-        saturate(alpha - unsupported * noise_reject * 0.24);
+        saturate(alpha - unsupported * noise_reject * 0.22);
 
-    // Edge Clean: direct fractional matte tightening.
-    float edgeWidth = lerp(0.50, 0.08, edge_clean);
+    // 3. Edge Clean: tighten fractional alpha, keep 0.5 contour.
+    float width = lerp(0.50, 0.10, edge_clean);
     float tightened =
-        smoothstep(0.5 - edgeWidth, 0.5 + edgeWidth, alpha);
+        smoothstep(0.5 - width, 0.5 + width, alpha);
 
     alpha = lerp(alpha, tightened, edge_clean);
 
-    // Hair Detail: only supported non-green fractional pixels.
+    float backgroundConsensus =
+        1.0 - smoothstep(0.12, 0.54, avg9);
+
+    alpha =
+        saturate(
+            alpha -
+            backgroundConsensus *
+            edge_clean *
+            (1.0 - alpha) *
+            0.16
+        );
+
+    // 5. Hair Detail: only structurally supported non-green hair.
     float nonGreen =
         1.0 - smoothstep(0.008, 0.095, GreenExcess(c.rgb));
 
-    float hairBand =
+    float fractionalHair =
         smoothstep(0.025, 0.32, aC) *
         (1.0 - smoothstep(0.64, 0.96, aC));
 
+    float supportH =
+        smoothstep(0.14, 0.56, (aL2 + aL + aR + aR2) * 0.25);
+
+    float supportV =
+        smoothstep(0.14, 0.56, (aU2 + aU + aD + aD2) * 0.25);
+
+    float supportD =
+        smoothstep(0.12, 0.50, (aUL + aUR + aDL + aDR) * 0.25);
+
     float hairSupport =
-        smoothstep(0.16, 0.62, max(crossA, medianA));
+        max(max(supportH, supportV), supportD);
+
+    float isolatedReject =
+        1.0 - smoothstep(0.05, 0.20, abs(aC - avg9));
 
     float hairCandidate =
-        aC * hairBand * nonGreen * hairSupport;
+        aC *
+        fractionalHair *
+        nonGreen *
+        hairSupport *
+        isolatedReject;
 
-    alpha = max(alpha, hairCandidate * hair_detail);
+    alpha =
+        max(alpha, hairCandidate * hair_detail);
 
-    // Black Protect: direct dark non-green restoration.
+    // 9. Black Protect: direct dark non-green restoration.
     float darkThreshold =
         lerp(0.02, 0.34, black_protect);
 
@@ -192,14 +221,20 @@ float4 PSUltraKey(VertData v) : TARGET
         1.0 - smoothstep(
             darkThreshold,
             darkThreshold + 0.08,
-            Luma(c.rgb));
+            Luma(c.rgb)
+        );
 
     float darkSupport =
-        smoothstep(0.20, 0.70, amax);
+        smoothstep(0.20, 0.70, max(cross, amax));
 
     alpha =
-        max(alpha,
-            darkMask * nonGreen * darkSupport * black_protect);
+        max(
+            alpha,
+            darkMask *
+            nonGreen *
+            darkSupport *
+            black_protect
+        );
 
     float lowLock =
         lerp(0.0005, 0.050, noise_reject);
@@ -210,16 +245,14 @@ float4 PSUltraKey(VertData v) : TARGET
     alpha = saturate(alpha);
 
     float finalEdge =
-        saturate(max(edge, 4.0 * alpha * (1.0 - alpha)));
+        saturate(max(edgeMask, 4.0 * alpha * (1.0 - alpha)));
 
     float3 original = c.rgb;
     float3 rgb = original;
 
-    // Edge Decontaminate: direct compositing reconstruction.
+    // 8. Decontaminate: direct reconstruction.
     float contamination =
-        max(original.g -
-            (original.r * 0.58 + original.b * 0.42),
-            0.0);
+        max(original.g - (original.r * 0.58 + original.b * 0.42), 0.0);
 
     float contaminationMask =
         smoothstep(0.0005, 0.10, contamination);
@@ -229,47 +262,59 @@ float4 PSUltraKey(VertData v) : TARGET
     float3 recovered =
         saturate(
             (original - key_color.rgb * (1.0 - alpha)) /
-            safeAlpha);
+            safeAlpha
+        );
+
+    float deconArea =
+        saturate(finalEdge + contaminationMask * 0.50);
 
     float deconMix =
         saturate(
             edge_decontaminate *
-            (finalEdge + contaminationMask * 0.50) *
-            smoothstep(0.08, 0.80, alpha));
+            deconArea *
+            smoothstep(0.08, 0.80, alpha)
+        );
 
     rgb = lerp(rgb, recovered, deconMix);
 
-    // Strong direct despill.
+    // 6 + 7. Strong despill with direct inside expansion.
     float oldLuma = Luma(rgb);
 
     float neutralGreen =
-        max(rgb.r * 0.62 + rgb.b * 0.38,
-            min(rgb.r, rgb.b));
+        max(
+            rgb.r * 0.62 + rgb.b * 0.38,
+            min(rgb.r, rgb.b)
+        );
 
     float excessGreen =
         max(rgb.g - neutralGreen, 0.0);
 
     float greenDetect =
-        smoothstep(0.0001, 0.050, excessGreen);
+        smoothstep(0.0001, 0.055, excessGreen);
 
     float subjectMask =
         smoothstep(0.04, 0.92, alpha);
 
     float coverage =
-        lerp(finalEdge,
-             max(finalEdge, subjectMask),
-             despill_inside);
+        lerp(
+            finalEdge,
+            max(finalEdge, subjectMask),
+            despill_inside
+        );
 
     coverage =
-        saturate(max(coverage, finalEdge * 0.65));
+        saturate(max(coverage, finalEdge * 0.60));
 
     float spillMask =
         saturate(greenDetect * coverage * despill);
 
-    float removed =
-        excessGreen * coverage * greenDetect * despill;
+    float removedDirect =
+        excessGreen *
+        coverage *
+        greenDetect *
+        despill;
 
-    rgb.g -= removed;
+    rgb.g -= removedDirect;
 
     float hardLimit =
         max(rgb.r, rgb.b) * 0.96 +
@@ -278,17 +323,18 @@ float4 PSUltraKey(VertData v) : TARGET
     float hardRemoved =
         max(rgb.g - hardLimit, 0.0) *
         spillMask *
-        lerp(0.25, 0.96, despill);
+        lerp(0.22, 0.94, despill);
 
     rgb.g -= hardRemoved;
 
-    float totalRemoved = removed + hardRemoved;
+    float totalRemoved =
+        removedDirect + hardRemoved;
 
     float warm =
         smoothstep(-0.10, 0.26, rgb.r - rgb.b);
 
-    rgb.r += totalRemoved * lerp(0.24, 0.46, warm);
-    rgb.b += totalRemoved * lerp(0.055, 0.010, warm);
+    rgb.r += totalRemoved * lerp(0.24, 0.45, warm);
+    rgb.b += totalRemoved * lerp(0.055, 0.012, warm);
 
     rgb = saturate(rgb);
 
@@ -296,7 +342,11 @@ float4 PSUltraKey(VertData v) : TARGET
     float ratio = clamp(oldLuma / newLuma, 0.94, 1.06);
 
     rgb =
-        lerp(rgb, saturate(rgb * ratio), spillMask * 0.30);
+        lerp(
+            rgb,
+            saturate(rgb * ratio),
+            spillMask * 0.30
+        );
 
     float magenta =
         max(min(rgb.r, rgb.b) - rgb.g, 0.0);
@@ -320,7 +370,7 @@ technique Draw
 {
     pass
     {
-        vertex_shader = VSDefault(v);
-        pixel_shader = PSUltraKey(v);
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSUltraKey(v_in);
     }
 }
