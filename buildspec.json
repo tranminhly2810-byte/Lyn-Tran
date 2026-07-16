@@ -31,11 +31,22 @@
             }
         }
     },
-    "platformConfig": {
-        "bundleId": "com.lyn.ultrakey"
-        }
-    },
-   "name": "lyn-ultrakey",
+   "platformConfig": {
+  "macos": {
+    "bundleId": "com.lyn.ultrakey"
+  }
+},
+"name": "lyn-ultrakey",
+"displayName": "Lyn UltraKey for OBS",
+"version": "0.1.0",
+"author": "Tran Minh Ly",
+"website": "https://github.com/tranminhly2810-byte/Lyn-Tran",
+"platformConfig": {
+  "macos": {
+    "bundleId": "com.lyn.ultrakey"
+  }
+},
+"name": "lyn-ultrakey",
 "displayName": "Lyn UltraKey for OBS",
 "version": "0.1.0",
 "author": "Tran Minh Ly",

@@ -1,34 +1,20 @@
-/*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along
-with this program. If not, see <https://www.gnu.org/licenses/>
-*/
-
 #include <obs-module.h>
-#include <plugin-support.h>
+
+#include "ultrakey-filter.h"
 
 OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
+OBS_MODULE_USE_DEFAULT_LOCALE("lyn-ultrakey", "en-US")
+
+MODULE_EXPORT const char *obs_module_description(void)
+{
+    return "Lyn UltraKey video filter for OBS Studio";
+}
 
 bool obs_module_load(void)
 {
-	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
-	return true;
-}
+    obs_register_source(&lyn_ultrakey_filter_info);
 
-void obs_module_unload(void)
-{
-	obs_log(LOG_INFO, "plugin unloaded");
+    blog(LOG_INFO, "[Lyn UltraKey] module loaded");
+
+    return true;
 }
